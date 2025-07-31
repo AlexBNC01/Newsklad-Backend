@@ -5,7 +5,9 @@
   "main": "app.js",
   "scripts": {
     "start": "node app.js",
-    "dev": "nodemon app.js"
+    "dev": "nodemon app.js",
+    "build": "npm install",
+    "postinstall": "echo 'Dependencies installed successfully'"
   },
   "dependencies": {
     "express": "^4.18.2",
