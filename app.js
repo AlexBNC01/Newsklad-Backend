@@ -14,6 +14,7 @@ console.log('🚀 Newsklad Backend запускается...');
 console.log('📅 Время запуска:', new Date().toISOString());
 console.log('🌍 Окружение:', process.env.NODE_ENV || 'development');
 console.log('🔌 Порт:', PORT);
+console.log('🆕 Версия: 1.0.1 - Fresh Deploy');
 
 // Базовые middleware
 app.use(helmet());
