@@ -32,10 +32,13 @@ app.use(helmet({
   },
 }));
 
+// CORS настройки для React Native
 app.use(cors({
-  origin: process.env.FRONTEND_URL || ['http://localhost:19006', 'http://localhost:19000'],
+  origin: true, // Разрешаем все домены для мобильного приложения
   credentials: true,
-  optionsSuccessStatus: 200
+  optionsSuccessStatus: 200,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
 }));
 
 // Rate limiting
@@ -61,6 +64,17 @@ const authLimiter = rateLimit({
 
 app.use(generalLimiter);
 app.use(morgan('combined'));
+
+// Отладочный middleware для всех запросов
+app.use((req, res, next) => {
+  console.log(`📡 ${new Date().toISOString()} - ${req.method} ${req.url}`);
+  console.log('📋 Headers:', JSON.stringify(req.headers, null, 2));
+  if (req.method === 'POST' && req.body) {
+    console.log('📦 Body:', JSON.stringify(req.body, null, 2));
+  }
+  next();
+});
+
 app.use(express.json({ limit: '1mb' })); // уменьшил лимит для безопасности
 app.use(express.urlencoded({ extended: true, limit: '1mb' }));
 
@@ -90,12 +104,33 @@ const initDatabase = async () => {
 
 // Базовые роуты
 app.get('/', (req, res) => {
+  console.log('🏠 GET / запрос получен');
   res.json({
     message: 'Newsklad Backend API работает!',
-    version: '1.1.0',
+    version: '1.2.0',
     database: dbConnected ? 'подключена' : 'отключена',
     timestamp: new Date().toISOString(),
-    environment: process.env.NODE_ENV || 'development'
+    environment: process.env.NODE_ENV || 'development',
+    cors: 'enabled',
+    endpoints: [
+      'GET /',
+      'GET /health', 
+      'POST /api/auth/register',
+      'POST /api/auth/login',
+      'POST /api/auth/verify-email'
+    ]
+  });
+});
+
+// Простой тестовый endpoint
+app.post('/api/test', (req, res) => {
+  console.log('🧪 POST /api/test запрос получен');
+  console.log('📦 Тест данные:', req.body);
+  res.json({
+    success: true,
+    message: 'API тест успешен!',
+    received: req.body,
+    timestamp: new Date().toISOString()
   });
 });
 

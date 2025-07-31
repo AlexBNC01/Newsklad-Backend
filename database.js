@@ -1,8 +1,9 @@
 const { Pool } = require('pg');
 
 // URL для подключения к базе данных Timeweb  
+// Попробуем разные варианты базы данных
 const DATABASE_URL = process.env.DATABASE_URL || 
-  'postgresql://gen_user:/d/gQAoi7J&&Yd@37.252.23.194:5432/default_db';
+  'postgresql://gen_user:/d/gQAoi7J&&Yd@37.252.23.194:5432/gen_user';
 
 console.log('🔌 Инициализация подключения к PostgreSQL...');
 console.log('🔗 DATABASE_URL:', DATABASE_URL ? 'УСТАНОВЛЕН' : 'НЕ НАЙДЕН');
