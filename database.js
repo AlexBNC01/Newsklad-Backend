@@ -1,12 +1,12 @@
 const { Pool } = require('pg');
 
 // URL для подключения к базе данных Timeweb  
-// Попробуем разные варианты подключения
+// Попробуем разные варианты подключения с правильными URL
 const databaseVariants = [
   process.env.DATABASE_URL,
-  'postgresql://gen_user:/d/gQAoi7J&&Yd@37.252.23.194:5432/gen_user',
-  'postgresql://gen_user:/d/gQAoi7J&&Yd@37.252.23.194:5432/default_db',
-  'postgresql://gen_user:/d/gQAoi7J&&Yd@37.252.23.194:5432/postgres'
+  'postgresql://gen_user:%2Fd%2FgQAoi7J%26%26Yd@37.252.23.194:5432/gen_user',
+  'postgresql://gen_user:%2Fd%2FgQAoi7J%26%26Yd@37.252.23.194:5432/default_db', 
+  'postgresql://gen_user:%2Fd%2FgQAoi7J%26%26Yd@37.252.23.194:5432/postgres'
 ].filter(Boolean);
 
 let DATABASE_URL = null;
@@ -21,6 +21,23 @@ let pool = null;
 const createPool = (url) => {
   return new Pool({
     connectionString: url,
+    ssl: false,
+    max: 10,
+    min: 1,
+    idleTimeoutMillis: 30000,
+    connectionTimeoutMillis: 10000,
+    acquireTimeoutMillis: 10000,
+  });
+};
+
+// Альтернативный способ подключения через объект конфигурации
+const createPoolFromConfig = (dbName) => {
+  return new Pool({
+    host: '37.252.23.194',
+    port: 5432,
+    database: dbName,
+    user: 'gen_user',
+    password: '/d/gQAoi7J&&Yd',
     ssl: false,
     max: 10,
     min: 1,
@@ -72,6 +89,47 @@ const checkConnection = async () => {
       // Если не последний вариант, продолжаем
       if (i < databaseVariants.length - 1) {
         console.log('⏭️ Пробуем следующий вариант...');
+      }
+    }
+  }
+  
+  // Если URL варианты не сработали, пробуем через объект конфигурации
+  console.log('🔄 Пробуем альтернативный способ подключения через объект...');
+  
+  const configVariants = ['gen_user', 'default_db', 'postgres'];
+  
+  for (let i = 0; i < configVariants.length; i++) {
+    const dbName = configVariants[i];
+    connectionAttempt = databaseVariants.length + i + 1;
+    
+    try {
+      console.log(`🔄 Конфиг попытка ${i + 1}/${configVariants.length}: ${dbName}`);
+      
+      // Создаем временный пул для тестирования
+      const testPool = createPoolFromConfig(dbName);
+      const client = await testPool.connect();
+      const result = await client.query('SELECT NOW() as current_time, version() as version');
+      client.release();
+      await testPool.end();
+      
+      // Если дошли сюда - подключение успешно!
+      console.log('✅ Подключение через объект конфигурации успешно!');
+      console.log('🕒 Время сервера БД:', result.rows[0].current_time);
+      console.log('📦 Версия PostgreSQL:', result.rows[0].version.split(' ')[0]);
+      
+      // Создаем основной пул
+      pool = createPoolFromConfig(dbName);
+      DATABASE_URL = `postgresql://gen_user:***@37.252.23.194:5432/${dbName}`;
+      
+      console.log(`🎯 Используем конфигурацию для БД: ${dbName}`);
+      return true;
+      
+    } catch (error) {
+      console.error(`❌ Конфиг вариант ${dbName} провален:`, error.message);
+      console.error('🔍 Код ошибки:', error.code);
+      
+      if (i < configVariants.length - 1) {
+        console.log('⏭️ Пробуем следующий конфиг вариант...');
       }
     }
   }
