@@ -134,6 +134,18 @@ app.post('/api/test', (req, res) => {
   });
 });
 
+// GET версия для простого тестирования
+app.get('/api/test', (req, res) => {
+  console.log('🧪 GET /api/test запрос получен');
+  res.json({
+    success: true,
+    message: 'GET API тест успешен!',
+    database: dbConnected ? 'подключена' : 'отключена',
+    timestamp: new Date().toISOString(),
+    userAgent: req.get('User-Agent')
+  });
+});
+
 app.get('/health', (req, res) => {
   res.json({
     status: 'healthy',

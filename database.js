@@ -1,48 +1,83 @@
 const { Pool } = require('pg');
 
 // URL для подключения к базе данных Timeweb  
-// Попробуем разные варианты базы данных
-const DATABASE_URL = process.env.DATABASE_URL || 
-  'postgresql://gen_user:/d/gQAoi7J&&Yd@37.252.23.194:5432/gen_user';
+// Попробуем разные варианты подключения
+const databaseVariants = [
+  process.env.DATABASE_URL,
+  'postgresql://gen_user:/d/gQAoi7J&&Yd@37.252.23.194:5432/gen_user',
+  'postgresql://gen_user:/d/gQAoi7J&&Yd@37.252.23.194:5432/default_db',
+  'postgresql://gen_user:/d/gQAoi7J&&Yd@37.252.23.194:5432/postgres'
+].filter(Boolean);
+
+let DATABASE_URL = null;
+let connectionAttempt = 0;
 
 console.log('🔌 Инициализация подключения к PostgreSQL...');
-console.log('🔗 DATABASE_URL:', DATABASE_URL ? 'УСТАНОВЛЕН' : 'НЕ НАЙДЕН');
+console.log('🔗 Попробуем варианты:', databaseVariants.length);
 
-// Показываем детали подключения (без пароля)
-const dbUrl = new URL(DATABASE_URL);
-console.log('🏠 Host:', dbUrl.hostname);
-console.log('🔌 Port:', dbUrl.port);
-console.log('👤 User:', dbUrl.username);
-console.log('💾 Database:', dbUrl.pathname.slice(1));
+let pool = null;
 
-// Создаем пул подключений
-const pool = new Pool({
-  connectionString: DATABASE_URL,
-  ssl: false, // Timeweb внутренние подключения без SSL
-  max: 10,
-  min: 1,
-  idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 15000, // увеличил таймаут
-  acquireTimeoutMillis: 15000,
-});
+// Функция для создания пула с определенным URL
+const createPool = (url) => {
+  return new Pool({
+    connectionString: url,
+    ssl: false,
+    max: 10,
+    min: 1,
+    idleTimeoutMillis: 30000,
+    connectionTimeoutMillis: 10000,
+    acquireTimeoutMillis: 10000,
+  });
+};
 
-// Функция для проверки подключения
+// Функция для проверки подключения - перебираем все варианты
 const checkConnection = async () => {
-  try {
-    console.log('🔄 Проверяем подключение к базе данных...');
-    const client = await pool.connect();
-    const result = await client.query('SELECT NOW() as current_time, version() as version');
-    client.release();
+  for (let i = 0; i < databaseVariants.length; i++) {
+    const url = databaseVariants[i];
+    connectionAttempt = i + 1;
     
-    console.log('✅ Подключение к PostgreSQL успешно!');
-    console.log('🕒 Время сервера БД:', result.rows[0].current_time);
-    console.log('📦 Версия PostgreSQL:', result.rows[0].version.split(' ')[0]);
-    return true;
-  } catch (error) {
-    console.error('❌ Ошибка подключения к PostgreSQL:', error.message);
-    console.error('🔍 Детали ошибки:', error.code);
-    return false;
+    try {
+      console.log(`🔄 Попытка ${connectionAttempt}/${databaseVariants.length}:`);
+      
+      // Показываем детали подключения (без пароля)
+      const dbUrl = new URL(url);
+      console.log('🏠 Host:', dbUrl.hostname);
+      console.log('🔌 Port:', dbUrl.port);
+      console.log('👤 User:', dbUrl.username);
+      console.log('💾 Database:', dbUrl.pathname.slice(1));
+      
+      // Создаем временный пул для тестирования
+      const testPool = createPool(url);
+      const client = await testPool.connect();
+      const result = await client.query('SELECT NOW() as current_time, version() as version');
+      client.release();
+      await testPool.end();
+      
+      // Если дошли сюда - подключение успешно!
+      console.log('✅ Подключение к PostgreSQL успешно!');
+      console.log('🕒 Время сервера БД:', result.rows[0].current_time);
+      console.log('📦 Версия PostgreSQL:', result.rows[0].version.split(' ')[0]);
+      
+      // Сохраняем рабочий URL и создаем основной пул
+      DATABASE_URL = url;
+      pool = createPool(url);
+      
+      console.log(`🎯 Используем вариант ${connectionAttempt}: ${dbUrl.pathname.slice(1)}`);
+      return true;
+      
+    } catch (error) {
+      console.error(`❌ Вариант ${connectionAttempt} провален:`, error.message);
+      console.error('🔍 Код ошибки:', error.code);
+      
+      // Если не последний вариант, продолжаем
+      if (i < databaseVariants.length - 1) {
+        console.log('⏭️ Пробуем следующий вариант...');
+      }
+    }
   }
+  
+  console.error('💥 Все варианты подключения к БД провалены!');
+  return false;
 };
 
 // Функция для создания таблиц
