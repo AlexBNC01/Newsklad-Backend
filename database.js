@@ -1,20 +1,28 @@
 const { Pool } = require('pg');
 
-// URL для подключения к базе данных Timeweb
+// URL для подключения к базе данных Timeweb  
 const DATABASE_URL = process.env.DATABASE_URL || 
-  'postgresql://gen_user:%2Fd%2FgQAoi7J%26%26Yd@37.252.23.194:5432/default_db';
+  'postgresql://gen_user:/d/gQAoi7J&&Yd@37.252.23.194:5432/default_db';
 
 console.log('🔌 Инициализация подключения к PostgreSQL...');
 console.log('🔗 DATABASE_URL:', DATABASE_URL ? 'УСТАНОВЛЕН' : 'НЕ НАЙДЕН');
 
+// Показываем детали подключения (без пароля)
+const dbUrl = new URL(DATABASE_URL);
+console.log('🏠 Host:', dbUrl.hostname);
+console.log('🔌 Port:', dbUrl.port);
+console.log('👤 User:', dbUrl.username);
+console.log('💾 Database:', dbUrl.pathname.slice(1));
+
 // Создаем пул подключений
 const pool = new Pool({
   connectionString: DATABASE_URL,
-  ssl: false, // Timeweb не требует SSL для внутренних подключений
-  max: 10, // максимум 10 подключений
-  min: 1,  // минимум 1 подключение
+  ssl: false, // Timeweb внутренние подключения без SSL
+  max: 10,
+  min: 1,
   idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 10000,
+  connectionTimeoutMillis: 15000, // увеличил таймаут
+  acquireTimeoutMillis: 15000,
 });
 
 // Функция для проверки подключения
@@ -50,6 +58,12 @@ const createTables = async () => {
         first_name VARCHAR(100) NOT NULL,
         last_name VARCHAR(100) NOT NULL,
         role VARCHAR(50) DEFAULT 'user',
+        email_verified BOOLEAN DEFAULT FALSE,
+        verification_code VARCHAR(255),
+        verification_expires TIMESTAMP,
+        login_attempts INTEGER DEFAULT 0,
+        locked_until TIMESTAMP,
+        last_login TIMESTAMP,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )

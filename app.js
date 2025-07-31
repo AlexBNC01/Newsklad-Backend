@@ -6,8 +6,11 @@ const helmet = require('helmet');
 const morgan = require('morgan');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const rateLimit = require('express-rate-limit');
+const { body, validationResult } = require('express-validator');
 
 const { checkConnection, createTables, query } = require('./database');
+const emailService = require('./emailService');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -18,12 +21,48 @@ console.log('🌍 Окружение:', process.env.NODE_ENV || 'development');
 console.log('🔌 Порт:', PORT);
 console.log('🆕 Версия: 1.1.0 - With PostgreSQL');
 
-// Middleware
-app.use(helmet());
-app.use(cors());
+// Меры безопасности
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+    },
+  },
+}));
+
+app.use(cors({
+  origin: process.env.FRONTEND_URL || ['http://localhost:19006', 'http://localhost:19000'],
+  credentials: true,
+  optionsSuccessStatus: 200
+}));
+
+// Rate limiting
+const generalLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 минут
+  max: 100, // максимум 100 запросов с IP
+  message: {
+    error: 'Слишком много запросов с вашего IP. Попробуйте позже.',
+    retryAfter: '15 минут'
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 минут
+  max: 5, // максимум 5 попыток авторизации
+  message: {
+    error: 'Слишком много попыток входа. Попробуйте через 15 минут.'
+  },
+  skipSuccessfulRequests: true,
+});
+
+app.use(generalLimiter);
 app.use(morgan('combined'));
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: '1mb' })); // уменьшил лимит для безопасности
+app.use(express.urlencoded({ extended: true, limit: '1mb' }));
 
 // Инициализация базы данных
 let dbConnected = false;
@@ -70,20 +109,30 @@ app.get('/health', (req, res) => {
   });
 });
 
+// Валидация для регистрации
+const registerValidation = [
+  body('email').isEmail().normalizeEmail().withMessage('Введите корректный email'),
+  body('password').isLength({ min: 8 }).withMessage('Пароль должен содержать минимум 8 символов'),
+  body('firstName').trim().isLength({ min: 2, max: 50 }).withMessage('Имя от 2 до 50 символов'),
+  body('lastName').trim().isLength({ min: 2, max: 50 }).withMessage('Фамилия от 2 до 50 символов'),
+];
+
 // API для регистрации
-app.post('/api/auth/register', async (req, res) => {
+app.post('/api/auth/register', authLimiter, registerValidation, async (req, res) => {
   try {
+    // Проверяем ошибки валидации
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Ошибки валидации',
+        errors: errors.array()
+      });
+    }
+
     const { email, password, firstName, lastName } = req.body;
     
     console.log('📝 Регистрация пользователя:', email);
-    
-    // Валидация
-    if (!email || !password || !firstName || !lastName) {
-      return res.status(400).json({
-        success: false,
-        message: 'Заполните все обязательные поля'
-      });
-    }
     
     if (!dbConnected) {
       // Режим без базы данных - возвращаем mock
@@ -107,35 +156,47 @@ app.post('/api/auth/register', async (req, res) => {
     }
     
     // Хешируем пароль
-    const hashedPassword = await bcrypt.hash(password, 10);
+    const hashedPassword = await bcrypt.hash(password, 12); // увеличил rounds для безопасности
     
-    // Создаем пользователя
+    // Генерируем код подтверждения
+    const verificationCode = emailService.generateVerificationCode();
+    const verificationExpires = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 часа
+    
+    // Создаем пользователя (email_verified = false)
     const result = await query(
-      'INSERT INTO users (email, password, first_name, last_name) VALUES ($1, $2, $3, $4) RETURNING id, email, first_name, last_name, created_at',
-      [email, hashedPassword, firstName, lastName]
+      `INSERT INTO users (email, password, first_name, last_name, email_verified, verification_code, verification_expires) 
+       VALUES ($1, $2, $3, $4, false, $5, $6) 
+       RETURNING id, email, first_name, last_name, created_at, email_verified`,
+      [email, hashedPassword, firstName, lastName, verificationCode, verificationExpires]
     );
     
     const user = result.rows[0];
     
-    // Создаем JWT токен
-    const token = jwt.sign(
-      { userId: user.id, email: user.email },
-      process.env.JWT_SECRET || 'default-secret',
-      { expiresIn: '24h' }
-    );
+    // Отправляем email подтверждения
+    const emailSent = await emailService.sendVerificationEmail(email, firstName, verificationCode);
     
+    // НЕ создаем JWT токен до подтверждения email
     res.json({
       success: true,
-      message: 'Регистрация успешна',
+      message: emailSent.success 
+        ? 'Регистрация успешна! Проверьте email для подтверждения аккаунта.'
+        : 'Регистрация успешна! Email подтверждение отключено - можете входить.',
       data: {
         user: {
           id: user.id,
           email: user.email,
           firstName: user.first_name,
           lastName: user.last_name,
+          emailVerified: user.email_verified,
           createdAt: user.created_at
         },
-        token
+        emailSent: emailSent.success,
+        // Токен выдаем только если email подтверждение отключено
+        token: emailSent.success ? null : jwt.sign(
+          { userId: user.id, email: user.email },
+          process.env.JWT_SECRET || 'default-secret',
+          { expiresIn: '24h' }
+        )
       }
     });
     
@@ -144,6 +205,91 @@ app.post('/api/auth/register', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Внутренняя ошибка сервера при регистрации'
+    });
+  }
+});
+
+// API для подтверждения email
+app.post('/api/auth/verify-email', async (req, res) => {
+  try {
+    const { code } = req.body;
+    
+    if (!code) {
+      return res.status(400).json({
+        success: false,
+        message: 'Код подтверждения обязателен'
+      });
+    }
+    
+    if (!dbConnected) {
+      return res.json({
+        success: true,
+        message: 'Email подтвержден (режим без БД)'
+      });
+    }
+    
+    // Ищем пользователя с данным кодом
+    const result = await query(
+      `SELECT id, email, first_name, last_name, verification_expires 
+       FROM users 
+       WHERE verification_code = $1 AND email_verified = false`,
+      [code]
+    );
+    
+    if (result.rows.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Неверный или уже использованный код подтверждения'
+      });
+    }
+    
+    const user = result.rows[0];
+    
+    // Проверяем не истек ли код
+    if (new Date() > new Date(user.verification_expires)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Код подтверждения истек. Запросите новый.'
+      });
+    }
+    
+    // Подтверждаем email
+    await query(
+      `UPDATE users 
+       SET email_verified = true, verification_code = NULL, verification_expires = NULL, updated_at = CURRENT_TIMESTAMP
+       WHERE id = $1`,
+      [user.id]
+    );
+    
+    // Создаем JWT токен
+    const token = jwt.sign(
+      { userId: user.id, email: user.email },
+      process.env.JWT_SECRET || 'default-secret',
+      { expiresIn: '24h' }
+    );
+    
+    console.log('✅ Email подтвержден:', user.email);
+    
+    res.json({
+      success: true,
+      message: 'Email успешно подтвержден! Добро пожаловать в Newsklad!',
+      data: {
+        user: {
+          id: user.id,
+          email: user.email,
+          firstName: user.first_name,
+          lastName: user.last_name,
+          emailVerified: true
+        },
+        token
+      }
+    });
+    
+  } catch (error) {
+    console.error('❌ Ошибка подтверждения email:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Внутренняя ошибка сервера'
     });
   }
 });
