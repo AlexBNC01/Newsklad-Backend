@@ -1,150 +1,46 @@
-const { Pool } = require('pg');
+const { Client } = require("pg");
 
-// URL для подключения к базе данных Timeweb  
-// Попробуем разные варианты подключения с правильными URL
-const databaseVariants = [
-  process.env.DATABASE_URL,
-  'postgresql://gen_user:%2Fd%2FgQAoi7J%26%26Yd@37.252.23.194:5432/gen_user',
-  'postgresql://gen_user:%2Fd%2FgQAoi7J%26%26Yd@37.252.23.194:5432/default_db', 
-  'postgresql://gen_user:%2Fd%2FgQAoi7J%26%26Yd@37.252.23.194:5432/postgres'
-].filter(Boolean);
+console.log("🔌 Инициализация подключения к PostgreSQL...");
 
-let DATABASE_URL = null;
-let connectionAttempt = 0;
+let client = null;
 
-console.log('🔌 Инициализация подключения к PostgreSQL...');
-console.log('🔗 Попробуем варианты:', databaseVariants.length);
-
-let pool = null;
-
-// Функция для создания пула с определенным URL
-const createPool = (url) => {
-  return new Pool({
-    connectionString: url,
-    ssl: false,
-    max: 10,
-    min: 1,
-    idleTimeoutMillis: 30000,
-    connectionTimeoutMillis: 10000,
-    acquireTimeoutMillis: 10000,
-  });
-};
-
-// Альтернативный способ подключения через объект конфигурации
-const createPoolFromConfig = (dbName) => {
-  return new Pool({
-    host: '37.252.23.194',
-    port: 5432,
-    database: dbName,
-    user: 'gen_user',
-    password: '/d/gQAoi7J&&Yd',
-    ssl: false,
-    max: 10,
-    min: 1,
-    idleTimeoutMillis: 30000,
-    connectionTimeoutMillis: 10000,
-    acquireTimeoutMillis: 10000,
-  });
-};
-
-// Функция для проверки подключения - перебираем все варианты
 const checkConnection = async () => {
-  for (let i = 0; i < databaseVariants.length; i++) {
-    const url = databaseVariants[i];
-    connectionAttempt = i + 1;
-    
-    try {
-      console.log(`🔄 Попытка ${connectionAttempt}/${databaseVariants.length}:`);
-      
-      // Показываем детали подключения (без пароля)
-      const dbUrl = new URL(url);
-      console.log('🏠 Host:', dbUrl.hostname);
-      console.log('🔌 Port:', dbUrl.port);
-      console.log('👤 User:', dbUrl.username);
-      console.log('💾 Database:', dbUrl.pathname.slice(1));
-      
-      // Создаем временный пул для тестирования
-      const testPool = createPool(url);
-      const client = await testPool.connect();
-      const result = await client.query('SELECT NOW() as current_time, version() as version');
-      client.release();
-      await testPool.end();
-      
-      // Если дошли сюда - подключение успешно!
-      console.log('✅ Подключение к PostgreSQL успешно!');
-      console.log('🕒 Время сервера БД:', result.rows[0].current_time);
-      console.log('📦 Версия PostgreSQL:', result.rows[0].version.split(' ')[0]);
-      
-      // Сохраняем рабочий URL и создаем основной пул
-      DATABASE_URL = url;
-      pool = createPool(url);
-      
-      console.log(`🎯 Используем вариант ${connectionAttempt}: ${dbUrl.pathname.slice(1)}`);
-      return true;
-      
-    } catch (error) {
-      console.error(`❌ Вариант ${connectionAttempt} провален:`, error.message);
-      console.error('🔍 Код ошибки:', error.code);
-      
-      // Если не последний вариант, продолжаем
-      if (i < databaseVariants.length - 1) {
-        console.log('⏭️ Пробуем следующий вариант...');
-      }
-    }
+  try {
+    console.log("🔄 Подключение к PostgreSQL...");
+
+    client = new Client({
+      user: "db_user",
+      host: "37.252.23.194",
+      database: "default_db",
+      password: "ZHUx~sCc@7WfCG",
+      port: 5432,
+    });
+
+    await client.connect();
+
+    const result = await client.query(
+      "SELECT NOW() as current_time, version() as version"
+    );
+
+    console.log("✅ Подключение к PostgreSQL успешно!");
+    console.log("🕒 Время сервера БД:", result.rows[0].current_time);
+    console.log("📦 Версия PostgreSQL:", result.rows[0].version.split(" ")[0]);
+
+    return true;
+  } catch (error) {
+    console.error("❌ Ошибка подключения к БД:", error.message);
+    console.error("🔍 Код ошибки:", error.code);
+    return false;
   }
-  
-  // Если URL варианты не сработали, пробуем через объект конфигурации
-  console.log('🔄 Пробуем альтернативный способ подключения через объект...');
-  
-  const configVariants = ['gen_user', 'default_db', 'postgres'];
-  
-  for (let i = 0; i < configVariants.length; i++) {
-    const dbName = configVariants[i];
-    connectionAttempt = databaseVariants.length + i + 1;
-    
-    try {
-      console.log(`🔄 Конфиг попытка ${i + 1}/${configVariants.length}: ${dbName}`);
-      
-      // Создаем временный пул для тестирования
-      const testPool = createPoolFromConfig(dbName);
-      const client = await testPool.connect();
-      const result = await client.query('SELECT NOW() as current_time, version() as version');
-      client.release();
-      await testPool.end();
-      
-      // Если дошли сюда - подключение успешно!
-      console.log('✅ Подключение через объект конфигурации успешно!');
-      console.log('🕒 Время сервера БД:', result.rows[0].current_time);
-      console.log('📦 Версия PostgreSQL:', result.rows[0].version.split(' ')[0]);
-      
-      // Создаем основной пул
-      pool = createPoolFromConfig(dbName);
-      DATABASE_URL = `postgresql://gen_user:***@37.252.23.194:5432/${dbName}`;
-      
-      console.log(`🎯 Используем конфигурацию для БД: ${dbName}`);
-      return true;
-      
-    } catch (error) {
-      console.error(`❌ Конфиг вариант ${dbName} провален:`, error.message);
-      console.error('🔍 Код ошибки:', error.code);
-      
-      if (i < configVariants.length - 1) {
-        console.log('⏭️ Пробуем следующий конфиг вариант...');
-      }
-    }
-  }
-  
-  console.error('💥 Все варианты подключения к БД провалены!');
-  return false;
 };
 
 // Функция для создания таблиц
 const createTables = async () => {
   try {
-    console.log('🔨 Создание таблиц...');
-    
+    console.log("🔨 Создание таблиц...");
+
     // Таблица пользователей
-    await pool.query(`
+    await client.query(`
       CREATE TABLE IF NOT EXISTS users (
         id SERIAL PRIMARY KEY,
         email VARCHAR(255) UNIQUE NOT NULL,
@@ -162,9 +58,9 @@ const createTables = async () => {
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `);
-    
+
     // Таблица компаний
-    await pool.query(`
+    await client.query(`
       CREATE TABLE IF NOT EXISTS companies (
         id SERIAL PRIMARY KEY,
         name VARCHAR(255) NOT NULL,
@@ -173,9 +69,9 @@ const createTables = async () => {
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `);
-    
+
     // Таблица запчастей
-    await pool.query(`
+    await client.query(`
       CREATE TABLE IF NOT EXISTS parts (
         id SERIAL PRIMARY KEY,
         name VARCHAR(255) NOT NULL,
@@ -187,11 +83,11 @@ const createTables = async () => {
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `);
-    
-    console.log('✅ Таблицы созданы успешно!');
+
+    console.log("✅ Таблицы созданы успешно!");
     return true;
   } catch (error) {
-    console.error('❌ Ошибка создания таблиц:', error.message);
+    console.error("❌ Ошибка создания таблиц:", error.message);
     return false;
   }
 };
@@ -200,20 +96,20 @@ const createTables = async () => {
 const query = async (text, params) => {
   const start = Date.now();
   try {
-    const result = await pool.query(text, params);
+    const result = await client.query(text, params);
     const duration = Date.now() - start;
-    console.log('📊 Запрос выполнен за', duration, 'мс');
+    console.log("📊 Запрос выполнен за", duration, "мс");
     return result;
   } catch (error) {
-    console.error('❌ Ошибка запроса:', error.message);
+    console.error("❌ Ошибка запроса:", error.message);
     throw error;
   }
 };
 
 // Экспортируем функции
 module.exports = {
-  pool,
+  client,
   query,
   checkConnection,
-  createTables
+  createTables,
 };
