@@ -9,11 +9,11 @@ const checkConnection = async () => {
     console.log("🔄 Подключение к PostgreSQL...");
 
     client = new Client({
-      user: "db_user",
-      host: "37.252.23.194",
-      database: "default_db",
-      password: "ZHUx~sCc@7WfCG",
-      port: 5432,
+      user: process.env.DB_USER,
+      host: process.env.DB_HOST,
+      database: process.env.DB_NAME,
+      password: process.env.DB_PASSWORD,
+      port: process.env.DB_PORT || 5432,
     });
 
     await client.connect();

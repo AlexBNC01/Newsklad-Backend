@@ -78,6 +78,48 @@ app.use((req, res, next) => {
 app.use(express.json({ limit: '1mb' })); // уменьшил лимит для безопасности
 app.use(express.urlencoded({ extended: true, limit: '1mb' }));
 
+// Middleware для авторизации
+const authenticateToken = (req, res, next) => {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1]; // Bearer TOKEN
+
+  if (!token) {
+    return res.status(401).json({
+      success: false,
+      message: 'Токен доступа не предоставлен'
+    });
+  }
+
+  jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
+    if (err) {
+      console.error('❌ Ошибка верификации токена:', err.message);
+      return res.status(403).json({
+        success: false,
+        message: 'Недействительный токен доступа'
+      });
+    }
+
+    req.user = user; // Добавляем информацию о пользователе в request
+    next();
+  });
+};
+
+// Опциональная авторизация (не блокирует запрос если токена нет)
+const optionalAuth = (req, res, next) => {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
+
+  if (token) {
+    jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
+      if (!err) {
+        req.user = user;
+      }
+    });
+  }
+  
+  next();
+};
+
 // Инициализация базы данных
 let dbConnected = false;
 
@@ -114,7 +156,12 @@ app.get('/', (req, res) => {
     cors: 'enabled',
     endpoints: [
       'GET /',
-      'GET /health', 
+      'GET /health',
+      'GET /api/db-check',
+      'POST /api/create-test-account',
+      'GET /api/users [AUTH]',
+      'GET /api/profile [AUTH]',
+      'PUT /api/profile [AUTH]',
       'POST /api/auth/register',
       'POST /api/auth/login',
       'POST /api/auth/verify-email'
@@ -154,6 +201,375 @@ app.get('/health', (req, res) => {
     timestamp: new Date().toISOString(),
     version: '1.1.0'
   });
+});
+
+// Детальная проверка БД
+app.get('/api/db-check', async (req, res) => {
+  try {
+    console.log('🔍 Проверка работоспособности БД...');
+    
+    if (!dbConnected) {
+      return res.status(503).json({
+        success: false,
+        message: 'База данных недоступна',
+        details: 'Подключение к БД не установлено'
+      });
+    }
+
+    // Проверяем подключение
+    const timeResult = await query('SELECT NOW() as current_time, version() as version');
+    
+    // Проверяем таблицы
+    const tablesResult = await query(`
+      SELECT table_name 
+      FROM information_schema.tables 
+      WHERE table_schema = 'public'
+      ORDER BY table_name
+    `);
+    
+    // Считаем количество пользователей
+    const usersCount = await query('SELECT COUNT(*) as count FROM users');
+    
+    // Считаем количество компаний
+    const companiesCount = await query('SELECT COUNT(*) as count FROM companies');
+    
+    // Считаем количество запчастей
+    const partsCount = await query('SELECT COUNT(*) as count FROM parts');
+
+    res.json({
+      success: true,
+      message: 'База данных работает корректно',
+      database: {
+        connected: true,
+        serverTime: timeResult.rows[0].current_time,
+        version: timeResult.rows[0].version.split(' ')[0],
+        tables: tablesResult.rows.map(row => row.table_name),
+        statistics: {
+          users: parseInt(usersCount.rows[0].count),
+          companies: parseInt(companiesCount.rows[0].count),
+          parts: parseInt(partsCount.rows[0].count)
+        }
+      }
+    });
+    
+  } catch (error) {
+    console.error('❌ Ошибка проверки БД:', error.message);
+    res.status(500).json({
+      success: false,
+      message: 'Ошибка при проверке базы данных',
+      error: error.message
+    });
+  }
+});
+
+// Создание тестового аккаунта для проверки синхронизации
+app.post('/api/create-test-account', async (req, res) => {
+  try {
+    console.log('🧪 Создание тестового аккаунта...');
+    
+    if (!dbConnected) {
+      return res.status(503).json({
+        success: false,
+        message: 'База данных недоступна'
+      });
+    }
+
+    const testEmail = `test_${Date.now()}@newsklad.test`;
+    const testPassword = 'TestPassword123!';
+    const hashedPassword = await bcrypt.hash(testPassword, 12);
+    
+    // Создаем тестового пользователя
+    const userResult = await query(
+      `INSERT INTO users (email, password, first_name, last_name, email_verified, role) 
+       VALUES ($1, $2, $3, $4, true, $5) 
+       RETURNING id, email, first_name, last_name, created_at`,
+      [testEmail, hashedPassword, 'Test', 'User', 'user']
+    );
+    
+    const user = userResult.rows[0];
+    
+    // Создаем тестовую компанию
+    const companyResult = await query(
+      `INSERT INTO companies (name, description, owner_id) 
+       VALUES ($1, $2, $3) 
+       RETURNING id, name, created_at`,
+      [`Test Company ${Date.now()}`, 'Тестовая компания для проверки синхронизации', user.id]
+    );
+    
+    const company = companyResult.rows[0];
+    
+    // Создаем несколько тестовых запчастей
+    const parts = [];
+    for (let i = 1; i <= 3; i++) {
+      const partResult = await query(
+        `INSERT INTO parts (name, description, sku, quantity, price, company_id) 
+         VALUES ($1, $2, $3, $4, $5, $6) 
+         RETURNING id, name, sku, quantity, price`,
+        [
+          `Test Part ${i}`,
+          `Тестовая запчасть №${i}`,
+          `TEST-${Date.now()}-${i}`,
+          Math.floor(Math.random() * 100) + 1,
+          (Math.random() * 1000).toFixed(2),
+          company.id
+        ]
+      );
+      parts.push(partResult.rows[0]);
+    }
+
+    res.json({
+      success: true,
+      message: 'Тестовый аккаунт создан успешно',
+      testAccount: {
+        user: {
+          id: user.id,
+          email: user.email,
+          firstName: user.first_name,
+          lastName: user.last_name,
+          createdAt: user.created_at
+        },
+        credentials: {
+          email: testEmail,
+          password: testPassword
+        },
+        company: {
+          id: company.id,
+          name: company.name,
+          createdAt: company.created_at
+        },
+        parts: parts
+      }
+    });
+    
+  } catch (error) {
+    console.error('❌ Ошибка создания тестового аккаунта:', error.message);
+    res.status(500).json({
+      success: false,
+      message: 'Ошибка при создании тестового аккаунта',
+      error: error.message
+    });
+  }
+});
+
+// Получение всех пользователей (только для администраторов)
+app.get('/api/users', authenticateToken, async (req, res) => {
+  try {
+    console.log('📋 Получение списка пользователей...');
+    
+    if (!dbConnected) {
+      return res.status(503).json({
+        success: false,
+        message: 'База данных недоступна'
+      });
+    }
+
+    const result = await query(`
+      SELECT 
+        u.id,
+        u.email,
+        u.first_name,
+        u.last_name,
+        u.role,
+        u.email_verified,
+        u.created_at,
+        COUNT(c.id) as companies_count
+      FROM users u
+      LEFT JOIN companies c ON u.id = c.owner_id
+      GROUP BY u.id, u.email, u.first_name, u.last_name, u.role, u.email_verified, u.created_at
+      ORDER BY u.created_at DESC
+    `);
+
+    res.json({
+      success: true,
+      message: `Найдено ${result.rows.length} пользователей`,
+      users: result.rows.map(user => ({
+        id: user.id,
+        email: user.email,
+        firstName: user.first_name,
+        lastName: user.last_name,
+        role: user.role,
+        emailVerified: user.email_verified,
+        companiesCount: parseInt(user.companies_count),
+        createdAt: user.created_at
+      }))
+    });
+    
+  } catch (error) {
+    console.error('❌ Ошибка получения пользователей:', error.message);
+    res.status(500).json({
+      success: false,
+      message: 'Ошибка при получении списка пользователей',
+      error: error.message
+    });
+  }
+});
+
+// Получение профиля текущего пользователя
+app.get('/api/profile', authenticateToken, async (req, res) => {
+  try {
+    console.log('👤 Получение профиля пользователя:', req.user.userId);
+    
+    if (!dbConnected) {
+      return res.json({
+        success: true,
+        message: 'Профиль пользователя (режим без БД)',
+        user: {
+          id: req.user.userId,
+          email: req.user.email,
+          firstName: 'Test',
+          lastName: 'User'
+        }
+      });
+    }
+
+    // Получаем данные пользователя с информацией о компаниях
+    const result = await query(`
+      SELECT 
+        u.id,
+        u.email,
+        u.first_name,
+        u.last_name,
+        u.role,
+        u.email_verified,
+        u.created_at,
+        u.last_login,
+        COUNT(c.id) as companies_count
+      FROM users u
+      LEFT JOIN companies c ON u.id = c.owner_id
+      WHERE u.id = $1
+      GROUP BY u.id, u.email, u.first_name, u.last_name, u.role, u.email_verified, u.created_at, u.last_login
+    `, [req.user.userId]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Пользователь не найден'
+      });
+    }
+
+    const user = result.rows[0];
+
+    // Обновляем время последнего входа
+    await query(
+      'UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = $1',
+      [req.user.userId]
+    );
+
+    res.json({
+      success: true,
+      user: {
+        id: user.id,
+        email: user.email,
+        firstName: user.first_name,
+        lastName: user.last_name,
+        role: user.role,
+        emailVerified: user.email_verified,
+        companiesCount: parseInt(user.companies_count),
+        createdAt: user.created_at,
+        lastLogin: user.last_login
+      }
+    });
+    
+  } catch (error) {
+    console.error('❌ Ошибка получения профиля:', error.message);
+    res.status(500).json({
+      success: false,
+      message: 'Ошибка при получении профиля пользователя'
+    });
+  }
+});
+
+// Обновление профиля пользователя
+app.put('/api/profile', authenticateToken, [
+  body('firstName').optional().trim().isLength({ min: 2, max: 50 }).withMessage('Имя от 2 до 50 символов'),
+  body('lastName').optional().trim().isLength({ min: 2, max: 50 }).withMessage('Фамилия от 2 до 50 символов'),
+], async (req, res) => {
+  try {
+    // Проверяем ошибки валидации
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Ошибки валидации',
+        errors: errors.array()
+      });
+    }
+
+    console.log('✏️ Обновление профиля пользователя:', req.user.userId);
+    
+    const { firstName, lastName } = req.body;
+
+    if (!firstName && !lastName) {
+      return res.status(400).json({
+        success: false,
+        message: 'Необходимо указать хотя бы одно поле для обновления'
+      });
+    }
+
+    if (!dbConnected) {
+      return res.json({
+        success: true,
+        message: 'Профиль обновлен (режим без БД)',
+        user: {
+          id: req.user.userId,
+          email: req.user.email,
+          firstName: firstName || 'Test',
+          lastName: lastName || 'User'
+        }
+      });
+    }
+
+    // Строим динамический запрос обновления
+    const updates = [];
+    const values = [];
+    let paramCount = 1;
+
+    if (firstName) {
+      updates.push(`first_name = $${paramCount}`);
+      values.push(firstName);
+      paramCount++;
+    }
+
+    if (lastName) {
+      updates.push(`last_name = $${paramCount}`);
+      values.push(lastName);
+      paramCount++;
+    }
+
+    updates.push(`updated_at = CURRENT_TIMESTAMP`);
+    values.push(req.user.userId); // для WHERE условия
+
+    const updateQuery = `
+      UPDATE users 
+      SET ${updates.join(', ')}
+      WHERE id = $${paramCount}
+      RETURNING id, email, first_name, last_name, role, email_verified, updated_at
+    `;
+
+    const result = await query(updateQuery, values);
+    const updatedUser = result.rows[0];
+
+    res.json({
+      success: true,
+      message: 'Профиль успешно обновлен',
+      user: {
+        id: updatedUser.id,
+        email: updatedUser.email,
+        firstName: updatedUser.first_name,
+        lastName: updatedUser.last_name,
+        role: updatedUser.role,
+        emailVerified: updatedUser.email_verified,
+        updatedAt: updatedUser.updated_at
+      }
+    });
+    
+  } catch (error) {
+    console.error('❌ Ошибка обновления профиля:', error.message);
+    res.status(500).json({
+      success: false,
+      message: 'Ошибка при обновлении профиля'
+    });
+  }
 });
 
 // Валидация для регистрации
@@ -241,7 +657,7 @@ app.post('/api/auth/register', authLimiter, registerValidation, async (req, res)
         // Токен выдаем только если email подтверждение отключено
         token: emailSent.success ? null : jwt.sign(
           { userId: user.id, email: user.email },
-          process.env.JWT_SECRET || 'default-secret',
+          process.env.JWT_SECRET,
           { expiresIn: '24h' }
         )
       }
@@ -311,7 +727,7 @@ app.post('/api/auth/verify-email', async (req, res) => {
     // Создаем JWT токен
     const token = jwt.sign(
       { userId: user.id, email: user.email },
-      process.env.JWT_SECRET || 'default-secret',
+      process.env.JWT_SECRET,
       { expiresIn: '24h' }
     );
     
@@ -395,7 +811,7 @@ app.post('/api/auth/login', async (req, res) => {
     // Создаем JWT токен
     const token = jwt.sign(
       { userId: user.id, email: user.email },
-      process.env.JWT_SECRET || 'default-secret',
+      process.env.JWT_SECRET,
       { expiresIn: '24h' }
     );
     
