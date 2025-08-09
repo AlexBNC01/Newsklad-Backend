@@ -164,7 +164,8 @@ app.get('/', (req, res) => {
       'PUT /api/profile [AUTH]',
       'POST /api/auth/register',
       'POST /api/auth/login',
-      'POST /api/auth/verify-email'
+      'POST /api/auth/verify-email',
+      'POST /api/auth/resend-verification'
     ]
   });
 });
@@ -753,6 +754,72 @@ app.post('/api/auth/verify-email', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Внутренняя ошибка сервера'
+    });
+  }
+});
+
+// Повторная отправка кода подтверждения email
+app.post('/api/auth/resend-verification', async (req, res) => {
+  try {
+    const { email } = req.body;
+    
+    if (!email) {
+      return res.status(400).json({
+        success: false,
+        message: 'Email обязателен для повторной отправки кода'
+      });
+    }
+    
+    console.log('📧 Повторная отправка кода подтверждения:', email);
+    
+    if (!dbConnected) {
+      return res.json({
+        success: true,
+        message: 'Код подтверждения отправлен повторно (режим без БД)'
+      });
+    }
+    
+    // Ищем пользователя с неподтвержденным email
+    const result = await query(
+      'SELECT id, first_name FROM users WHERE email = $1 AND email_verified = false',
+      [email]
+    );
+    
+    if (result.rows.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Пользователь не найден или email уже подтвержден'
+      });
+    }
+    
+    const user = result.rows[0];
+    
+    // Генерируем новый код подтверждения
+    const verificationCode = emailService.generateVerificationCode();
+    const verificationExpires = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 часа
+    
+    // Обновляем код в БД
+    await query(
+      'UPDATE users SET verification_code = $1, verification_expires = $2 WHERE id = $3',
+      [verificationCode, verificationExpires, user.id]
+    );
+    
+    // Отправляем новый email
+    const emailSent = await emailService.sendVerificationEmail(email, user.first_name, verificationCode);
+    
+    res.json({
+      success: true,
+      message: emailSent.success 
+        ? 'Новый код подтверждения отправлен на ваш email'
+        : 'Новый код сгенерирован (email сервис отключен)',
+      emailSent: emailSent.success
+    });
+    
+  } catch (error) {
+    console.error('❌ Ошибка повторной отправки кода:', error.message);
+    res.status(500).json({
+      success: false,
+      message: 'Ошибка при повторной отправке кода подтверждения'
     });
   }
 });
